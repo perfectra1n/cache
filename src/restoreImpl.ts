@@ -11,13 +11,22 @@ import {
 import * as utils from "./utils/actionUtils";
 
 const canSaveToS3 = process.env["RUNS_ON_S3_BUCKET_CACHE"] !== undefined;
+const canSaveToNFS = process.env["RUNS_ON_NFS_CACHE_PATH"] !== undefined;
+
+if (canSaveToS3 && canSaveToNFS) {
+    throw new Error(
+        "Both RUNS_ON_S3_BUCKET_CACHE and RUNS_ON_NFS_CACHE_PATH are set. Please configure only one cache backend."
+    );
+}
+
+const useCustomBackend = canSaveToS3 || canSaveToNFS;
 
 export async function restoreImpl(
     stateProvider: IStateProvider,
     earlyExit?: boolean | undefined
 ): Promise<string | undefined> {
     try {
-        if (!canSaveToS3 && !utils.isCacheFeatureAvailable()) {
+        if (!useCustomBackend && !utils.isCacheFeatureAvailable()) {
             core.setOutput(Outputs.CacheHit, "false");
             return;
         }
@@ -47,9 +56,11 @@ export async function restoreImpl(
 
         let cacheKey: string | undefined;
 
-        if (canSaveToS3) {
+        if (useCustomBackend) {
             core.info(
-                "The cache action detected a local S3 bucket cache. Using it."
+                canSaveToNFS
+                    ? "The cache action detected an NFS cache path. Using it."
+                    : "The cache action detected a local S3 bucket cache. Using it."
             );
             cacheKey = await custom.restoreCache(
                 cachePaths,

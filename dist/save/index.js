@@ -95924,7 +95924,11 @@ exports.saveCache = exports.restoreCache = exports.isFeatureAvailable = exports.
 const core = __importStar(__nccwpck_require__(37484));
 const path = __importStar(__nccwpck_require__(16928));
 const utils = __importStar(__nccwpck_require__(98299));
-const cacheHttpClient = __importStar(__nccwpck_require__(35951));
+const s3Backend = __importStar(__nccwpck_require__(35951));
+const nfsBackend = __importStar(__nccwpck_require__(14084));
+const cacheHttpClient = process.env["RUNS_ON_NFS_CACHE_PATH"]
+    ? nfsBackend
+    : s3Backend;
 const tar_1 = __nccwpck_require__(95321);
 const retry_1 = __nccwpck_require__(24481);
 class ValidationError extends Error {
@@ -96446,6 +96450,185 @@ exports.computeFileSha256 = computeFileSha256;
 
 /***/ }),
 
+/***/ 14084:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.saveCache = exports.downloadCache = exports.getCacheEntry = void 0;
+const fs = __importStar(__nccwpck_require__(79896));
+const path = __importStar(__nccwpck_require__(16928));
+const crypto = __importStar(__nccwpck_require__(76982));
+const core = __importStar(__nccwpck_require__(37484));
+const utils = __importStar(__nccwpck_require__(98299));
+const backend_1 = __nccwpck_require__(35951);
+const retry_1 = __nccwpck_require__(24481);
+function getNfsCachePath() {
+    return process.env["RUNS_ON_NFS_CACHE_PATH"] || "";
+}
+function getNfsPrefix(paths, { compressionMethod, enableCrossOsArchive }) {
+    const repository = process.env.GITHUB_REPOSITORY;
+    const version = (0, backend_1.getCacheVersion)(paths, compressionMethod, enableCrossOsArchive);
+    return path.join(getNfsCachePath(), "cache", repository || "", version);
+}
+function getCacheEntry(keys, paths, { compressionMethod, enableCrossOsArchive }) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const cacheEntry = {};
+        for (const restoreKey of keys) {
+            const dirPath = getNfsPrefix(paths, {
+                compressionMethod,
+                enableCrossOsArchive
+            });
+            try {
+                let entries;
+                try {
+                    entries = yield fs.promises.readdir(dirPath, {
+                        withFileTypes: true
+                    });
+                }
+                catch (err) {
+                    if (err.code === "ENOENT") {
+                        continue;
+                    }
+                    throw err;
+                }
+                // Filter to files matching the prefix, excluding .sha256 sidecar and .tmp files
+                const matching = entries.filter(e => e.isFile() &&
+                    e.name.startsWith(restoreKey) &&
+                    !e.name.endsWith(".sha256") &&
+                    !e.name.includes(".tmp"));
+                if (matching.length === 0) {
+                    continue;
+                }
+                // Get stats and sort by mtime descending to find the most recent
+                const withStats = yield Promise.all(matching.map((e) => __awaiter(this, void 0, void 0, function* () {
+                    const fullPath = path.join(dirPath, e.name);
+                    const stat = yield fs.promises.stat(fullPath);
+                    return { name: e.name, fullPath, mtime: stat.mtimeMs };
+                })));
+                withStats.sort((a, b) => b.mtime - a.mtime);
+                const best = withStats[0];
+                cacheEntry.cacheKey = best.name;
+                cacheEntry.archiveLocation = `nfs://${best.fullPath}`;
+                return cacheEntry;
+            }
+            catch (error) {
+                console.error(`Error listing files with prefix ${restoreKey} in ${dirPath}:`, error);
+            }
+        }
+        return cacheEntry;
+    });
+}
+exports.getCacheEntry = getCacheEntry;
+function downloadCache(archiveLocation, archivePath) {
+    return __awaiter(this, void 0, void 0, function* () {
+        // Parse nfs:// location to get the source path
+        const sourcePath = archiveLocation.replace(/^nfs:\/\//, "");
+        yield (0, retry_1.withRetry)(() => __awaiter(this, void 0, void 0, function* () {
+            yield fs.promises.copyFile(sourcePath, archivePath);
+        }), {
+            isRetryable: retry_1.isTransientError,
+            label: "nfsDownloadCache"
+        });
+        // Validate SHA-256 against sidecar file if it exists
+        const sha256Path = `${sourcePath}.sha256`;
+        try {
+            const expectedSha256 = (yield fs.promises.readFile(sha256Path, "utf-8")).trim();
+            core.info("Verifying download integrity (SHA-256)...");
+            const actualSha256 = yield computeFileSha256(archivePath);
+            if (actualSha256 !== expectedSha256) {
+                throw new Error(`Download integrity failed: expected SHA-256 ${expectedSha256} but computed ${actualSha256}`);
+            }
+            core.info("Download integrity verified (SHA-256 match)");
+        }
+        catch (err) {
+            if (err.code === "ENOENT") {
+                core.debug("No SHA-256 sidecar file found, skipping integrity check");
+            }
+            else {
+                throw err;
+            }
+        }
+    });
+}
+exports.downloadCache = downloadCache;
+function saveCache(key, paths, archivePath, { compressionMethod, enableCrossOsArchive, cacheSize: archiveFileSize }) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const dirPath = getNfsPrefix(paths, {
+            compressionMethod,
+            enableCrossOsArchive
+        });
+        const destPath = path.join(dirPath, key);
+        const tmpPath = `${destPath}.tmp.${process.pid}`;
+        const cacheSize = utils.getArchiveFileSizeInBytes(archivePath);
+        core.info(`Cache Size: ~${Math.round(cacheSize / (1024 * 1024))} MB (${cacheSize} B)`);
+        // Compute SHA-256 of archive
+        core.info("Computing archive SHA-256...");
+        const archiveSha256 = yield computeFileSha256(archivePath);
+        core.info(`Archive SHA-256: ${archiveSha256}`);
+        core.info(`Saving cache to ${destPath}`);
+        yield (0, retry_1.withRetry)(() => __awaiter(this, void 0, void 0, function* () {
+            // Ensure destination directory exists
+            yield fs.promises.mkdir(dirPath, { recursive: true });
+            // Atomic write: copy to temp file then rename
+            yield fs.promises.copyFile(archivePath, tmpPath);
+            yield fs.promises.rename(tmpPath, destPath);
+            // Write SHA-256 sidecar file
+            yield fs.promises.writeFile(`${destPath}.sha256`, archiveSha256);
+        }), {
+            isRetryable: retry_1.isTransientError,
+            label: "nfsSaveCache"
+        });
+        core.info(`Cache saved successfully.`);
+    });
+}
+exports.saveCache = saveCache;
+function computeFileSha256(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash("sha256");
+        const stream = fs.createReadStream(filePath);
+        stream.on("data", data => hash.update(data));
+        stream.on("end", () => resolve(hash.digest("hex")));
+        stream.on("error", reject);
+    });
+}
+
+
+/***/ }),
+
 /***/ 24481:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -96579,14 +96762,21 @@ function isTransientError(error) {
         name === "SlowDown") {
         return true;
     }
-    // Network-level errors
+    // Network-level and NFS/filesystem errors
     if (message.includes("ECONNRESET") ||
         message.includes("ETIMEDOUT") ||
         message.includes("ECONNREFUSED") ||
         message.includes("EPIPE") ||
         message.includes("socket hang up") ||
         message.includes("network") ||
-        message.includes("NetworkingError")) {
+        message.includes("NetworkingError") ||
+        message.includes("ESTALE") ||
+        message.includes("EIO") ||
+        message.includes("EMFILE") ||
+        message.includes("ENFILE") ||
+        message.includes("ENOLCK") ||
+        message.includes("ENOLINK") ||
+        message.includes("EREMOTEIO")) {
         return true;
     }
     // HTTP 5xx from message
@@ -96730,6 +96920,11 @@ const custom = __importStar(__nccwpck_require__(70897));
 const stateProvider_1 = __nccwpck_require__(52879);
 const utils = __importStar(__nccwpck_require__(8270));
 const canSaveToS3 = process.env["RUNS_ON_S3_BUCKET_CACHE"] !== undefined;
+const canSaveToNFS = process.env["RUNS_ON_NFS_CACHE_PATH"] !== undefined;
+if (canSaveToS3 && canSaveToNFS) {
+    throw new Error("Both RUNS_ON_S3_BUCKET_CACHE and RUNS_ON_NFS_CACHE_PATH are set. Please configure only one cache backend.");
+}
+const useCustomBackend = canSaveToS3 || canSaveToNFS;
 // Catch and log any unhandled exceptions.  These exceptions can leak out of the uploadChunk method in
 // @actions/toolkit when a failed upload closes the file descriptor causing any in-process reads to
 // throw an uncaught exception.  Instead of failing this action, just warn.
@@ -96738,7 +96933,7 @@ function saveImpl(stateProvider) {
     return __awaiter(this, void 0, void 0, function* () {
         let cacheId = -1;
         try {
-            if (!canSaveToS3 && !utils.isCacheFeatureAvailable()) {
+            if (!useCustomBackend && !utils.isCacheFeatureAvailable()) {
                 return;
             }
             if (!utils.isValidEvent()) {
@@ -96764,8 +96959,10 @@ function saveImpl(stateProvider) {
                 required: true
             });
             const enableCrossOsArchive = utils.getInputAsBool(constants_1.Inputs.EnableCrossOsArchive);
-            if (canSaveToS3) {
-                core.info("The cache action detected a local S3 bucket cache. Using it.");
+            if (useCustomBackend) {
+                core.info(canSaveToNFS
+                    ? "The cache action detected an NFS cache path. Using it."
+                    : "The cache action detected a local S3 bucket cache. Using it.");
                 cacheId = yield custom.saveCache(cachePaths, primaryKey, {
                     uploadChunkSize: utils.getInputAsInt(constants_1.Inputs.UploadChunkSize)
                 }, enableCrossOsArchive);

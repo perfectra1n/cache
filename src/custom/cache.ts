@@ -3,7 +3,12 @@
 import * as core from "@actions/core";
 import * as path from "path";
 import * as utils from "@actions/cache/lib/internal/cacheUtils";
-import * as cacheHttpClient from "./backend";
+import * as s3Backend from "./backend";
+import * as nfsBackend from "./nfsBackend";
+
+const cacheHttpClient = process.env["RUNS_ON_NFS_CACHE_PATH"]
+    ? nfsBackend
+    : s3Backend;
 import {
     createTar,
     extractTar,

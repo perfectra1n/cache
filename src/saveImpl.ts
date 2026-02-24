@@ -11,6 +11,15 @@ import {
 import * as utils from "./utils/actionUtils";
 
 const canSaveToS3 = process.env["RUNS_ON_S3_BUCKET_CACHE"] !== undefined;
+const canSaveToNFS = process.env["RUNS_ON_NFS_CACHE_PATH"] !== undefined;
+
+if (canSaveToS3 && canSaveToNFS) {
+    throw new Error(
+        "Both RUNS_ON_S3_BUCKET_CACHE and RUNS_ON_NFS_CACHE_PATH are set. Please configure only one cache backend."
+    );
+}
+
+const useCustomBackend = canSaveToS3 || canSaveToNFS;
 
 // Catch and log any unhandled exceptions.  These exceptions can leak out of the uploadChunk method in
 // @actions/toolkit when a failed upload closes the file descriptor causing any in-process reads to
@@ -22,7 +31,7 @@ export async function saveImpl(
 ): Promise<number | void> {
     let cacheId = -1;
     try {
-        if (!canSaveToS3 && !utils.isCacheFeatureAvailable()) {
+        if (!useCustomBackend && !utils.isCacheFeatureAvailable()) {
             return;
         }
 
@@ -65,9 +74,11 @@ export async function saveImpl(
             Inputs.EnableCrossOsArchive
         );
 
-        if (canSaveToS3) {
+        if (useCustomBackend) {
             core.info(
-                "The cache action detected a local S3 bucket cache. Using it."
+                canSaveToNFS
+                    ? "The cache action detected an NFS cache path. Using it."
+                    : "The cache action detected a local S3 bucket cache. Using it."
             );
 
             cacheId = await custom.saveCache(

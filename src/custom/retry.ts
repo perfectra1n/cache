@@ -125,7 +125,7 @@ export function isTransientError(error: Error): boolean {
         return true;
     }
 
-    // Network-level errors
+    // Network-level and NFS/filesystem errors
     if (
         message.includes("ECONNRESET") ||
         message.includes("ETIMEDOUT") ||
@@ -133,7 +133,14 @@ export function isTransientError(error: Error): boolean {
         message.includes("EPIPE") ||
         message.includes("socket hang up") ||
         message.includes("network") ||
-        message.includes("NetworkingError")
+        message.includes("NetworkingError") ||
+        message.includes("ESTALE") ||
+        message.includes("EIO") ||
+        message.includes("EMFILE") ||
+        message.includes("ENFILE") ||
+        message.includes("ENOLCK") ||
+        message.includes("ENOLINK") ||
+        message.includes("EREMOTEIO")
     ) {
         return true;
     }

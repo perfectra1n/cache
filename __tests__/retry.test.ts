@@ -269,6 +269,16 @@ describe("retry", () => {
             expect(isTransientError(err)).toBe(true);
         });
 
+        it("detects NFS/filesystem errors", () => {
+            expect(isTransientError(new Error("ESTALE: stale file handle"))).toBe(true);
+            expect(isTransientError(new Error("EIO: i/o error"))).toBe(true);
+            expect(isTransientError(new Error("EMFILE: too many open files"))).toBe(true);
+            expect(isTransientError(new Error("ENFILE: file table overflow"))).toBe(true);
+            expect(isTransientError(new Error("ENOLCK: no locks available"))).toBe(true);
+            expect(isTransientError(new Error("ENOLINK: link severed"))).toBe(true);
+            expect(isTransientError(new Error("EREMOTEIO: remote I/O error"))).toBe(true);
+        });
+
         it("returns false for non-transient errors", () => {
             expect(isTransientError(new Error("Access Denied"))).toBe(false);
             expect(isTransientError(new Error("NoSuchBucket"))).toBe(false);
