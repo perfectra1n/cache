@@ -96564,31 +96564,38 @@ function downloadCache(archiveLocation, archivePath) {
     return __awaiter(this, void 0, void 0, function* () {
         // Parse nfs:// location to get the source path
         const sourcePath = archiveLocation.replace(/^nfs:\/\//, "");
+        // Read expected SHA-256 upfront (if sidecar exists) so we can validate
+        // during the copy instead of re-reading the entire file afterwards.
+        let expectedSha256;
+        const sha256Path = `${sourcePath}.sha256`;
+        try {
+            expectedSha256 = (yield fs.promises.readFile(sha256Path, "utf-8")).trim();
+        }
+        catch (err) {
+            if (err.code !== "ENOENT") {
+                throw err;
+            }
+            core.debug("No SHA-256 sidecar file found, skipping integrity check");
+        }
         yield (0, retry_1.withRetry)(() => __awaiter(this, void 0, void 0, function* () {
-            yield fs.promises.copyFile(sourcePath, archivePath);
+            if (expectedSha256) {
+                // Stream copy + SHA-256 in a single pass to avoid reading
+                // the file twice (copyFile + computeFileSha256 separately
+                // would double the I/O through the NFS mount).
+                core.info("Verifying download integrity (SHA-256)...");
+                const actualSha256 = yield copyFileWithSha256(sourcePath, archivePath);
+                if (actualSha256 !== expectedSha256) {
+                    throw new Error(`Download integrity failed: expected SHA-256 ${expectedSha256} but computed ${actualSha256}`);
+                }
+                core.info("Download integrity verified (SHA-256 match)");
+            }
+            else {
+                yield fs.promises.copyFile(sourcePath, archivePath);
+            }
         }), {
             isRetryable: retry_1.isTransientError,
             label: "nfsDownloadCache"
         });
-        // Validate SHA-256 against sidecar file if it exists
-        const sha256Path = `${sourcePath}.sha256`;
-        try {
-            const expectedSha256 = (yield fs.promises.readFile(sha256Path, "utf-8")).trim();
-            core.info("Verifying download integrity (SHA-256)...");
-            const actualSha256 = yield computeFileSha256(archivePath);
-            if (actualSha256 !== expectedSha256) {
-                throw new Error(`Download integrity failed: expected SHA-256 ${expectedSha256} but computed ${actualSha256}`);
-            }
-            core.info("Download integrity verified (SHA-256 match)");
-        }
-        catch (err) {
-            if (err.code === "ENOENT") {
-                core.debug("No SHA-256 sidecar file found, skipping integrity check");
-            }
-            else {
-                throw err;
-            }
-        }
     });
 }
 exports.downloadCache = downloadCache;
@@ -96631,6 +96638,32 @@ function computeFileSha256(filePath) {
         stream.on("data", data => hash.update(data));
         stream.on("end", () => resolve(hash.digest("hex")));
         stream.on("error", reject);
+    });
+}
+/**
+ * Copy a file while computing its SHA-256 in a single pass.
+ * Returns the hex-encoded hash of the copied data.
+ */
+function copyFileWithSha256(sourcePath, destPath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash("sha256");
+        const readStream = fs.createReadStream(sourcePath);
+        const writeStream = fs.createWriteStream(destPath);
+        readStream.on("data", (chunk) => {
+            hash.update(chunk);
+        });
+        readStream.on("error", err => {
+            writeStream.destroy();
+            reject(err);
+        });
+        writeStream.on("error", err => {
+            readStream.destroy();
+            reject(err);
+        });
+        writeStream.on("finish", () => {
+            resolve(hash.digest("hex"));
+        });
+        readStream.pipe(writeStream);
     });
 }
 

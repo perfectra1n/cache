@@ -228,6 +228,36 @@ describe("nfsBackend", () => {
             ).rejects.toThrow("Download integrity failed");
         });
 
+        it("copies correct content when SHA-256 sidecar exists (single-pass)", async () => {
+            const sourceDir = path.join(tmpDir, "source");
+            await fs.promises.mkdir(sourceDir, { recursive: true });
+            const sourcePath = path.join(sourceDir, "archive.tar");
+            const content = "archive-content-for-single-pass-test";
+            await fs.promises.writeFile(sourcePath, content);
+
+            // Compute correct SHA-256
+            const crypto = require("crypto");
+            const sha256 = crypto
+                .createHash("sha256")
+                .update(content)
+                .digest("hex");
+            await fs.promises.writeFile(`${sourcePath}.sha256`, sha256);
+
+            const destPath = path.join(tmpDir, "local-archive.tar");
+
+            await nfsBackend.downloadCache(
+                `nfs://${sourcePath}`,
+                destPath
+            );
+
+            // Verify both the content AND the integrity check passed
+            const destContent = await fs.promises.readFile(destPath, "utf-8");
+            expect(destContent).toBe(content);
+            expect(core.info).toHaveBeenCalledWith(
+                "Download integrity verified (SHA-256 match)"
+            );
+        });
+
         it("skips integrity check when sidecar is missing", async () => {
             const sourceDir = path.join(tmpDir, "source");
             await fs.promises.mkdir(sourceDir, { recursive: true });
