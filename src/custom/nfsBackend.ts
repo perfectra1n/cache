@@ -11,6 +11,13 @@ function getNfsCachePath(): string {
     return process.env["RUNS_ON_NFS_CACHE_PATH"] || "";
 }
 
+// S3 keys are flat strings — "/" is just a character, not a directory separator.
+// On a filesystem "/" creates subdirectories, breaking readdir-based lookups.
+// Replace "/" with "-" to keep all cache files in a single flat directory.
+function sanitizeKey(key: string): string {
+    return key.replace(/\//g, "-");
+}
+
 function getNfsPrefix(
     paths: string[],
     { compressionMethod, enableCrossOsArchive }
@@ -52,10 +59,11 @@ export async function getCacheEntry(
             }
 
             // Filter to files matching the prefix, excluding .sha256 sidecar and .tmp files
+            const safeKey = sanitizeKey(restoreKey);
             const matching = entries.filter(
                 e =>
                     e.isFile() &&
-                    e.name.startsWith(restoreKey) &&
+                    e.name.startsWith(safeKey) &&
                     !e.name.endsWith(".sha256") &&
                     !e.name.includes(".tmp")
             );
@@ -142,7 +150,8 @@ export async function saveCache(
         compressionMethod,
         enableCrossOsArchive
     });
-    const destPath = path.join(dirPath, key);
+    const safeKey = sanitizeKey(key);
+    const destPath = path.join(dirPath, safeKey);
     const tmpPath = `${destPath}.tmp.${process.pid}`;
 
     const cacheSize = utils.getArchiveFileSizeInBytes(archivePath);

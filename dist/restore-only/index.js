@@ -96499,6 +96499,12 @@ const retry_1 = __nccwpck_require__(24481);
 function getNfsCachePath() {
     return process.env["RUNS_ON_NFS_CACHE_PATH"] || "";
 }
+// S3 keys are flat strings — "/" is just a character, not a directory separator.
+// On a filesystem "/" creates subdirectories, breaking readdir-based lookups.
+// Replace "/" with "-" to keep all cache files in a single flat directory.
+function sanitizeKey(key) {
+    return key.replace(/\//g, "-");
+}
 function getNfsPrefix(paths, { compressionMethod, enableCrossOsArchive }) {
     const repository = process.env.GITHUB_REPOSITORY;
     const version = (0, backend_1.getCacheVersion)(paths, compressionMethod, enableCrossOsArchive);
@@ -96526,8 +96532,9 @@ function getCacheEntry(keys, paths, { compressionMethod, enableCrossOsArchive })
                     throw err;
                 }
                 // Filter to files matching the prefix, excluding .sha256 sidecar and .tmp files
+                const safeKey = sanitizeKey(restoreKey);
                 const matching = entries.filter(e => e.isFile() &&
-                    e.name.startsWith(restoreKey) &&
+                    e.name.startsWith(safeKey) &&
                     !e.name.endsWith(".sha256") &&
                     !e.name.includes(".tmp"));
                 if (matching.length === 0) {
@@ -96591,7 +96598,8 @@ function saveCache(key, paths, archivePath, { compressionMethod, enableCrossOsAr
             compressionMethod,
             enableCrossOsArchive
         });
-        const destPath = path.join(dirPath, key);
+        const safeKey = sanitizeKey(key);
+        const destPath = path.join(dirPath, safeKey);
         const tmpPath = `${destPath}.tmp.${process.pid}`;
         const cacheSize = utils.getArchiveFileSizeInBytes(archivePath);
         core.info(`Cache Size: ~${Math.round(cacheSize / (1024 * 1024))} MB (${cacheSize} B)`);

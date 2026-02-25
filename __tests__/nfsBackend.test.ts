@@ -327,5 +327,78 @@ describe("nfsBackend", () => {
             const tmpFiles = files.filter(f => f.includes(".tmp"));
             expect(tmpFiles).toHaveLength(0);
         });
+
+        it("flattens keys with / separators to - (matching S3 flat key model)", async () => {
+            const { getCacheVersion } = require("../src/custom/backend");
+            const version = getCacheVersion(["/tmp/path"], undefined, false);
+
+            const archivePath = path.join(tmpDir, "archive.tar");
+            await fs.promises.writeFile(archivePath, "nested-data");
+
+            await nfsBackend.saveCache(
+                "pnpm-modules-renovate/some-long-key",
+                ["/tmp/path"],
+                archivePath,
+                {
+                    compressionMethod: undefined,
+                    enableCrossOsArchive: false,
+                    cacheSize: 0
+                }
+            );
+
+            // File should be flat in the version dir, not in a subdirectory
+            const destDir = cacheDir(version);
+            const flatName = "pnpm-modules-renovate-some-long-key";
+            const destPath = path.join(destDir, flatName);
+            const content = await fs.promises.readFile(destPath, "utf-8");
+            expect(content).toBe("nested-data");
+
+            // SHA-256 sidecar should also exist
+            const sha256 = await fs.promises.readFile(
+                `${destPath}.sha256`,
+                "utf-8"
+            );
+            expect(sha256).toHaveLength(64);
+
+            // No subdirectories should have been created
+            const entries = await fs.promises.readdir(destDir, {
+                withFileTypes: true
+            });
+            const dirs = entries.filter(e => e.isDirectory());
+            expect(dirs).toHaveLength(0);
+        });
+
+        it("restores cache saved with / in key via prefix match", async () => {
+            const { getCacheVersion } = require("../src/custom/backend");
+            const version = getCacheVersion(["/tmp/path"], undefined, false);
+
+            const archivePath = path.join(tmpDir, "archive.tar");
+            await fs.promises.writeFile(archivePath, "round-trip-data");
+
+            // Save with key containing /
+            await nfsBackend.saveCache(
+                "pnpm-modules-renovate/some-long-key",
+                ["/tmp/path"],
+                archivePath,
+                {
+                    compressionMethod: undefined,
+                    enableCrossOsArchive: false,
+                    cacheSize: 0
+                }
+            );
+
+            // Restore with a prefix that also contains /
+            const result = await nfsBackend.getCacheEntry(
+                ["pnpm-modules-renovate/some"],
+                ["/tmp/path"],
+                {
+                    compressionMethod: undefined,
+                    enableCrossOsArchive: false
+                }
+            );
+
+            expect(result.cacheKey).toBe("pnpm-modules-renovate-some-long-key");
+            expect(result.archiveLocation).toMatch(/^nfs:\/\//);
+        });
     });
 });
